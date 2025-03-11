@@ -1,4 +1,5 @@
 using NUnit.Framework.Interfaces;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.UI;
@@ -78,7 +79,7 @@ namespace Core
         protected void Move(Rigidbody2D rb)
         {
             moveInput = Input.GetAxis("Horizontal");
-            float speed = Input.GetKey("left ctrl") ? playerSprintSpeed : playerMoveSpeed;
+            float speed = Input.GetKey("shift") ? playerSprintSpeed : playerMoveSpeed;
             rb.linearVelocity = new Vector2(moveInput*speed, rb.linearVelocityY);
             //{Анимация движения}
             FlipModel(moveInput);
@@ -312,6 +313,202 @@ namespace Core
             return Mathf.Min((damage + Mathf.Max(strength - enemyStrength, 0) * strengthRatio +
                 lucky / 100 * Random.Range(0, 10)) *
                 (1 - enemyArmor * (1 - enemyDeteriorationArmor) / 100), damage + 30f);
+        }
+    }
+
+    public class TerrainGeneration: MonoBehaviour
+    {
+        public GameObject[] blockPrefabs; 
+        public int chunkWidth = 16;
+        public int chunkHeight = 16;
+        public float noiseScale = 0.1f;
+        public float heightMultiplier = 10f;
+        public Transform player;
+        public float renderDistance = 32f;
+
+        private Dictionary<Vector2Int, GameObject> chunks = new Dictionary<Vector2Int, GameObject>();
+        private Vector2Int lastPlayerChunk;
+
+        protected void Start()
+        {
+            lastPlayerChunk = GetChunkCoordinates(player.position);
+            GenerateInitialTerrain();
+            PlacePlayerOnSafePosition();
+        }
+
+        protected void Update()
+        {
+            Vector2Int currentPlayerChunk = GetChunkCoordinates(player.position);
+
+            if (currentPlayerChunk != lastPlayerChunk)
+            {
+                GenerateTerrainAroundPlayer(currentPlayerChunk);
+                lastPlayerChunk = currentPlayerChunk;
+            }
+
+            RemoveDistantChunks(currentPlayerChunk);
+        }
+
+        private Vector2Int GetChunkCoordinates(Vector3 position)
+        {
+            int x = Mathf.FloorToInt(position.x / chunkWidth);
+            int y = Mathf.FloorToInt(position.y / chunkHeight);
+            return new Vector2Int(x, y);
+        }
+
+        private void GenerateInitialTerrain()
+        {
+            Vector2Int playerChunk = GetChunkCoordinates(player.position);
+
+            for (int x = playerChunk.x - 1; x <= playerChunk.x + 1; x++)
+            {
+                for (int y = playerChunk.y - 1; y <= playerChunk.y + 1; y++)
+                {
+                    GenerateChunk(x, y);
+                }
+            }
+        }
+
+        private void PlacePlayerOnSafePosition()
+        {
+            float startX = 0;
+            float startY = 0;
+
+            for (int y = chunkHeight; y >= 0; y--)
+            {
+                if (IsPositionSafe(startX, y))
+                {
+                    startY = y + 1;
+                    break;
+                }
+            }
+
+            player.position = new Vector3(startX, startY, 0);
+        }
+
+        private bool IsPositionSafe(float x, float y)
+        {
+            Collider2D[] colliders = Physics2D.OverlapCircleAll(new Vector2(x, y), 0.1f);
+            foreach (var collider in colliders)
+            {
+                if (collider.CompareTag("Ground"))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void GenerateChunk(int chunkX, int chunkY)
+        {
+            Vector2Int chunkCoord = new Vector2Int(chunkX, chunkY);
+
+            if (chunks.ContainsKey(chunkCoord))
+                return;
+
+            GameObject chunk = new GameObject($"Chunk_{chunkX}_{chunkY}");
+            chunk.transform.position = new Vector3(chunkX * chunkWidth, chunkY * chunkHeight, 0);
+            chunks.Add(chunkCoord, chunk);
+
+            for (int x = 0; x < chunkWidth; x++)
+            {
+                for (int y = 0; y < chunkHeight; y++)
+                {
+                    float worldX = chunkX * chunkWidth + x;
+                    float worldY = chunkY * chunkHeight + y;
+
+                    Biome biome = GetBiome(worldX, worldY);
+                    float height = GetHeight(worldX, worldY, biome);
+
+                    if (worldY <= height)
+                    {
+                        GameObject blockPrefab = GetBlockPrefab(worldX, worldY, biome);
+                        Vector3 blockPosition = new Vector3(worldX, worldY, 0);
+                        Instantiate(blockPrefab, blockPosition, Quaternion.identity, chunk.transform);
+                    }
+                }
+            }
+        }
+
+        private Biome GetBiome(float x, float y)
+        {
+            float biomeNoise = Mathf.PerlinNoise(x * 0.01f, y * 0.01f);
+
+            if (biomeNoise < 0.3f)
+                return Biome.Forest;
+            else if (biomeNoise < 0.6f)
+                return Biome.Desert;
+            else
+                return Biome.Mountains;
+        }
+
+        private float GetHeight(float x, float y, Biome biome)
+        {
+            float heightNoise = Mathf.PerlinNoise(x * noiseScale, y * noiseScale);
+
+            switch (biome)
+            {
+                case Biome.Forest:
+                    return heightNoise * heightMultiplier;
+                case Biome.Desert:
+                    return heightNoise * heightMultiplier * 0.8f;
+                case Biome.Mountains:
+                    return heightNoise * heightMultiplier * 1.5f;
+                default:
+                    return heightNoise * heightMultiplier;
+            }
+        }
+
+        private GameObject GetBlockPrefab(float x, float y, Biome biome)
+        {
+            switch (biome)
+            {
+                case Biome.Forest:
+                    return blockPrefabs[0];
+                case Biome.Desert:
+                    return blockPrefabs[1];
+                case Biome.Mountains:
+                    return blockPrefabs[2];
+                default:
+                    return blockPrefabs[0];
+            }
+        }
+
+        private void GenerateTerrainAroundPlayer(Vector2Int playerChunk)
+        {
+            for (int x = playerChunk.x - 1; x <= playerChunk.x + 1; x++)
+            {
+                for (int y = playerChunk.y - 1; y <= playerChunk.y + 1; y++)
+                {
+                    GenerateChunk(x, y);
+                }
+            }
+        }
+
+        private void RemoveDistantChunks(Vector2Int playerChunk)
+        {
+            List<Vector2Int> chunksToRemove = new List<Vector2Int>();
+
+            foreach (var chunkCoord in chunks.Keys)
+            {
+                if (Vector2Int.Distance(chunkCoord, playerChunk) > renderDistance / chunkWidth)
+                {
+                    Destroy(chunks[chunkCoord]);
+                    chunksToRemove.Add(chunkCoord);
+                }
+            }
+
+            foreach (var chunkCoord in chunksToRemove)
+            {
+                chunks.Remove(chunkCoord);
+            }
+        }
+
+        public enum Biome
+        {
+            Forest,
+            Desert,
+            Mountains
         }
     }
 }
